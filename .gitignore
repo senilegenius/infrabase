@@ -35,3 +35,12 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Backend configs contain bucket names and role ARNs — never commit
+*.hcl
+
+# Internal memory/notes — never publish
+memory/
+
+# Local Claude Code settings (contain machine-local paths)
+.claude/settings.local.json
