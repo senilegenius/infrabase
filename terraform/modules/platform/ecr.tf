@@ -1,3 +1,5 @@
+# ── balance-tracker ───────────────────────────────────────────────────────────
+
 resource "aws_ecr_repository" "balance_tracker" {
   name                 = "balance-tracker"
   image_tag_mutability = "MUTABLE"

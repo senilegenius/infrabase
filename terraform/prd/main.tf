@@ -1,8 +1,8 @@
-# Platform infrastructure for the sandbox account.
+# Platform infrastructure for the prd account.
 # Calls the shared modules/platform module — resource definitions live there.
 #
 # Credentials: set AWS_PROFILE to your management account profile — Terraform
-# assumes target_role_arn to create resources in the sandbox account.
+# assumes target_role_arn to create resources in the prd account.
 #
 # Usage:
 #   export AWS_PROFILE=<your-mgmt-profile>
@@ -34,7 +34,7 @@ provider "aws" {
 module "platform" {
   source = "../modules/platform"
 
-  environment                 = "sandbox"
+  environment                 = "prd"
   aws_region                  = var.aws_region
   github_repo_balance_tracker = var.github_repo_balance_tracker
 }
