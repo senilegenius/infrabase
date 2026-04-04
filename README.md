@@ -30,17 +30,18 @@ how the app runs — only that it has a container registry and deploy credential
 ## Architecture overview
 
 ```
-infrabase (this repo)               app repo (e.g. my-balance-tracker)
+infrabase (this repo)               app repo (e.g. exampleapp)
 ─────────────────────               ──────────────────────────────────
 terraform/bootstrap/                terraform/infra/
   S3 state bucket                     Lambda function
   DynamoDB lock table                 API Gateway
                                       EventBridge scheduler
 terraform/sandbox/                    IAM execution role
+terraform/prd/
   ECR repository (per app)
   GitHub Actions OIDC provider      GitHub Actions workflow
-  GitHub Actions IAM role (per app)   build image → push to ECR
-                                       → update Lambda
+  GitHub Actions IAM role (per app)   push to main → sandbox
+                                      push v* tag  → prd
 ```
 
 infrabase applies first. App repos depend on its outputs (ECR URL, IAM role ARN).
