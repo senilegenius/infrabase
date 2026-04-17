@@ -48,15 +48,25 @@ State keys follow the pattern `<module>/terraform.tfstate`.
 terraform/
 ├── bootstrap/          # One-time setup: S3 bucket + DynamoDB lock table (management account)
 ├── modules/
-│   └── platform/       # Shared module: all resource definitions live here (ECR, OIDC, IAM)
+│   ├── mgmt/           # Management account resources: ECR repos, ECR resource policies, ECR push IAM roles
+│   └── platform/       # Workload account resources: GitHub OIDC provider, Lambda deploy IAM roles
+├── mgmt/               # Thin wrapper: calls modules/mgmt for the management account (no assume_role)
 ├── sandbox/            # Thin wrapper: calls modules/platform for the sandbox account
 └── prd/                # Thin wrapper: calls modules/platform for the prd account
 ```
 
-Resource definitions (ECR repos, IAM roles, OIDC provider) live **only** in `modules/platform/`.
-The `sandbox/` and `prd/` directories contain only provider config, backend config, variable
-declarations, and module calls — no resource blocks. Adding a new app means editing the module
-once; both environments pick it up.
+All four environment directories (`mgmt/`, `sandbox/`, `prd/`, and one-time `bootstrap/`) are thin
+wrappers — provider config, backend config, variable declarations, and a module call. No resource
+blocks live in environment directories.
+
+Two modules, each with a distinct concern:
+- **`modules/mgmt/`** — ECR repositories and cross-account pull policies live here. Central image
+  registry; applies once to the management account.
+- **`modules/platform/`** — GitHub OIDC provider and Lambda deploy IAM roles live here. Per-environment;
+  both `sandbox/` and `prd/` call this module independently.
+
+Adding a new app means editing both modules once. The `mgmt/` environment picks up the new ECR repo;
+both `sandbox/` and `prd/` pick up the new Lambda deploy role automatically.
 
 ## Running Terraform
 
@@ -69,6 +79,20 @@ cp terraform.tfvars.example terraform.tfvars   # fill in real values
 terraform init
 terraform apply
 ```
+
+### mgmt
+
+```sh
+cd terraform/mgmt
+export AWS_PROFILE=<your-mgmt-profile>
+cp backend.hcl.example backend.hcl            # fill in real values
+cp terraform.tfvars.example terraform.tfvars  # fill in real values
+terraform init -backend-config=backend.hcl
+terraform plan
+terraform apply
+```
+
+No `assume_role` — Terraform runs directly in the management account.
 
 ### sandbox
 
@@ -103,14 +127,13 @@ gitignored).
 ## Adding a new app (exampleapp walkthrough)
 
 This is the full procedure. Substitute `exampleapp` with the real app name.
-The 4-step workflow is: infrabase apply → set GitHub secret → push image → app apply.
 
-### Step 1 — infrabase: edit the shared module, then apply
+CI uses **two IAM roles**: one in the management account to push images to the central ECR, and
+one in each workload account to deploy the Lambda. Both are created here in infrabase.
 
-All resource definitions live in `terraform/modules/platform/`. You never touch
-`sandbox/` or `prd/` resource files — they don't have any.
+### Step 1a — infrabase: edit modules/mgmt/ (ECR + ECR push role)
 
-**`terraform/modules/platform/ecr.tf`** — add ECR repository + lifecycle policy:
+**`terraform/modules/mgmt/ecr.tf`** — add ECR repository + lifecycle policy + update the resource policy principal list:
 
 ```hcl
 # ── exampleapp ────────────────────────────────────────────────────────────────
@@ -141,10 +164,130 @@ resource "aws_ecr_lifecycle_policy" "exampleapp" {
     ]
   })
 }
+
+resource "aws_ecr_repository_policy" "exampleapp" {
+  repository = aws_ecr_repository.exampleapp.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowCrossAccountPull"
+      Effect = "Allow"
+      Principal = {
+        AWS = [
+          "arn:aws:iam::${var.sandbox_account_id}:root",
+          "arn:aws:iam::${var.prd_account_id}:root",
+        ]
+      }
+      Action = [
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:BatchGetImage",
+        "ecr:BatchCheckLayerAvailability",
+      ]
+    }]
+  })
+}
 ```
 
-**`terraform/modules/platform/iam_github.tf`** — add role + policy (reuses the existing
-`aws_iam_openid_connect_provider.github` resource):
+**`terraform/modules/mgmt/iam_github.tf`** — add ECR push role (reuses the existing OIDC provider):
+
+```hcl
+# ── exampleapp ────────────────────────────────────────────────────────────────
+
+resource "aws_iam_role" "github_actions_exampleapp_ecr_push" {
+  name = "exampleapp-ecr-push-github-actions"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
+        StringLike   = { "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo_exampleapp}:*" }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "github_actions_exampleapp_ecr_push" {
+  name = "ecr-push"
+  role = aws_iam_role.github_actions_exampleapp_ecr_push.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Sid = "ECRAuth", Effect = "Allow", Action = "ecr:GetAuthorizationToken", Resource = "*" },
+      {
+        Sid    = "ECRPush"
+        Effect = "Allow"
+        Action = ["ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"]
+        Resource = aws_ecr_repository.exampleapp.arn
+      },
+    ]
+  })
+}
+```
+
+**`terraform/modules/mgmt/variables.tf`** — add:
+```hcl
+variable "github_repo_exampleapp" {
+  description = "GitHub repository for exampleapp in owner/repo format"
+  type        = string
+}
+```
+
+**`terraform/modules/mgmt/outputs.tf`** — add two outputs:
+```hcl
+output "exampleapp_ecr_repository_url" {
+  value = aws_ecr_repository.exampleapp.repository_url
+}
+output "exampleapp_ecr_push_role_arn" {
+  description = "IAM role ARN for exampleapp GitHub Actions to push images to central ECR"
+  value = aws_iam_role.github_actions_exampleapp_ecr_push.arn
+}
+```
+
+**Wire the variable in `mgmt/`:**
+
+`mgmt/main.tf` — add to the module call:
+```hcl
+github_repo_exampleapp = var.github_repo_exampleapp
+```
+
+`mgmt/variables.tf` — add:
+```hcl
+variable "github_repo_exampleapp" {
+  description = "GitHub repository for exampleapp in owner/repo format"
+  type        = string
+}
+```
+
+`mgmt/terraform.tfvars.example` — add placeholder line:
+```
+github_repo_exampleapp = "<github-owner>/exampleapp"
+```
+
+`mgmt/outputs.tf` — add pass-through outputs:
+```hcl
+output "exampleapp_ecr_repository_url" {
+  value = module.mgmt.exampleapp_ecr_repository_url
+}
+output "exampleapp_ecr_push_role_arn" {
+  value = module.mgmt.exampleapp_ecr_push_role_arn
+}
+```
+
+**Apply mgmt:**
+```sh
+cd terraform/mgmt
+terraform init -backend-config=backend.hcl
+terraform apply
+terraform output exampleapp_ecr_repository_url      # copy — needed for app repo Terraform
+terraform output exampleapp_ecr_push_role_arn       # copy — needed for AWS_ECR_PUSH_ROLE_ARN secret
+```
+
+### Step 1b — infrabase: edit modules/platform/ (Lambda deploy role)
+
+**`terraform/modules/platform/iam_github.tf`** — add Lambda deploy role (reuses the existing OIDC provider):
 
 ```hcl
 # ── exampleapp ────────────────────────────────────────────────────────────────
@@ -171,17 +314,10 @@ resource "aws_iam_role_policy" "github_actions_exampleapp" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      { Sid = "ECRAuth", Effect = "Allow", Action = "ecr:GetAuthorizationToken", Resource = "*" },
       {
-        Sid      = "ECRPush"
-        Effect   = "Allow"
-        Action   = ["ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:BatchGetImage","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage"]
-        Resource = aws_ecr_repository.exampleapp.arn
-      },
-      {
-        Sid      = "LambdaDeploy"
-        Effect   = "Allow"
-        Action   = ["lambda:UpdateFunctionCode","lambda:GetFunctionConfiguration"]
+        Sid    = "LambdaDeploy"
+        Effect = "Allow"
+        Action = ["lambda:UpdateFunctionCode","lambda:GetFunctionConfiguration"]
         Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:exampleapp-*"
       },
     ]
@@ -197,17 +333,15 @@ variable "github_repo_exampleapp" {
 }
 ```
 
-**`terraform/modules/platform/outputs.tf`** — add two outputs:
+**`terraform/modules/platform/outputs.tf`** — add output:
 ```hcl
-output "exampleapp_ecr_repository_url" {
-  value = aws_ecr_repository.exampleapp.repository_url
-}
-output "exampleapp_github_actions_role_arn" {
+output "exampleapp_deploy_role_arn" {
+  description = "IAM role ARN for exampleapp GitHub Actions to deploy Lambda"
   value = aws_iam_role.github_actions_exampleapp.arn
 }
 ```
 
-**Wire the new variable in each environment wrapper** — same edit in both `sandbox/` and `prd/`:
+**Wire the variable in both `sandbox/` and `prd/`** — same edit in each:
 
 `sandbox/main.tf` and `prd/main.tf` — add to the module call:
 ```hcl
@@ -227,32 +361,26 @@ variable "github_repo_exampleapp" {
 github_repo_exampleapp = "<github-owner>/exampleapp"
 ```
 
-**Add real values to your local `terraform.tfvars` in both `sandbox/` and `prd/`** (gitignored):
-```
-github_repo_exampleapp = "<owner>/exampleapp"
-```
-
-**Also add pass-through outputs in `sandbox/outputs.tf` and `prd/outputs.tf`:**
+`sandbox/outputs.tf` and `prd/outputs.tf` — add pass-through output:
 ```hcl
-output "exampleapp_ecr_repository_url" {
-  value = module.platform.exampleapp_ecr_repository_url
-}
-output "exampleapp_github_actions_role_arn" {
-  value = module.platform.exampleapp_github_actions_role_arn
+output "exampleapp_deploy_role_arn" {
+  value = module.platform.exampleapp_deploy_role_arn
 }
 ```
 
-**Apply sandbox first:**
+**Apply sandbox:**
 ```sh
 cd terraform/sandbox
+terraform init -backend-config=backend.hcl
 terraform apply
-terraform output exampleapp_github_actions_role_arn   # copy this value
+terraform output exampleapp_deploy_role_arn           # copy — needed for AWS_DEPLOY_ROLE_ARN secret
 ```
 
-### Step 2 — App repo: set GitHub Actions secret
+### Step 2 — App repo: set GitHub Actions secrets
 
 GitHub repo → Settings → Secrets and variables → Actions → environment `sandbox`:
-Add `AWS_ROLE_ARN` = (output from step 1)
+- `AWS_ECR_PUSH_ROLE_ARN` = ECR push role ARN (from mgmt output)
+- `AWS_DEPLOY_ROLE_ARN` = Lambda deploy role ARN (from sandbox output)
 
 ### Step 3 — App repo: push to trigger CI (pushes first image to ECR)
 
@@ -280,9 +408,11 @@ builds and deploys automatically.
 
 ## Cross-repo relationships
 
-| App | infrabase outputs used |
-|---|---|
-| balance-tracker | `balance_tracker_ecr_repository_url`, `balance_tracker_github_actions_role_arn` |
+| App | Output | Source environment |
+|---|---|---|
+| balance-tracker | `balance_tracker_ecr_repository_url` | `mgmt/` |
+| balance-tracker | `balance_tracker_ecr_push_role_arn` | `mgmt/` |
+| balance-tracker | `balance_tracker_deploy_role_arn` | `sandbox/` or `prd/` |
 
 ECR URLs are stable — they only change if the repository is destroyed and recreated.
 

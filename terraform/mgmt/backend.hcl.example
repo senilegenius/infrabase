@@ -1,0 +1,4 @@
+bucket         = "tfstate-<mgmt-account-id>"
+key            = "mgmt/terraform.tfstate"
+region         = "us-west-2"
+dynamodb_table = "terraform-state-lock"
