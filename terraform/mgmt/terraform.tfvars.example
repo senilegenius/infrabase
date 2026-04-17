@@ -1,0 +1,3 @@
+github_repo_balance_tracker = "<github-owner>/balance-tracker"
+sandbox_account_id          = "<sandbox-account-id>"
+prd_account_id              = "<prd-account-id>"
