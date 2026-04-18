@@ -60,6 +60,25 @@ resource "aws_iam_role_policy" "github_actions_balance_tracker" {
         # Predictable ARN pattern — no dependency on Lambda existing at apply time
         Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:balance-tracker-*"
       },
+      {
+        # UpdateFunctionCode validates image access using the caller's credentials
+        # before accepting the new image URI — requires pull permissions on the
+        # central ECR repo in the management account.
+        Sid    = "ECRPull"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchCheckLayerAvailability",
+        ]
+        Resource = var.ecr_repository_arn
+      },
+      {
+        Sid      = "ECRAuth"
+        Effect   = "Allow"
+        Action   = "ecr:GetAuthorizationToken"
+        Resource = "*"
+      },
     ]
   })
 }

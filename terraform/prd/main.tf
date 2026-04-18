@@ -37,4 +37,5 @@ module "platform" {
   environment                 = "prd"
   aws_region                  = var.aws_region
   github_repo_balance_tracker = var.github_repo_balance_tracker
+  ecr_repository_arn          = var.ecr_repository_arn
 }

@@ -1,2 +1,3 @@
 target_role_arn             = "arn:aws:iam::<prd-account-id>:role/<role-name>"
 github_repo_balance_tracker = "<github-owner>/balance-tracker"
+ecr_repository_arn          = "arn:aws:ecr:us-west-2:<mgmt-account-id>:repository/balance-tracker"
