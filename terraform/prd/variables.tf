@@ -14,3 +14,8 @@ variable "github_repo_balance_tracker" {
   description = "GitHub repository for balance-tracker in owner/repo format (used for OIDC trust policy)"
   type        = string
 }
+
+variable "ecr_repository_arn" {
+  description = "ARN of the central ECR repository in the management account"
+  type        = string
+}

@@ -15,3 +15,8 @@ variable "github_repo_balance_tracker" {
   description = "GitHub repository for balance-tracker in owner/repo format"
   type        = string
 }
+
+variable "ecr_repository_arn" {
+  description = "ARN of the central ECR repository (management account) — grants the GitHub Actions deploy role permission to validate image access during UpdateFunctionCode"
+  type        = string
+}

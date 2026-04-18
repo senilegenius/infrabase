@@ -45,20 +45,46 @@ resource "aws_ecr_repository_policy" "balance_tracker" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "AllowCrossAccountPull"
-      Effect = "Allow"
-      Principal = {
-        AWS = [
-          "arn:aws:iam::${var.sandbox_account_id}:root",
-          "arn:aws:iam::${var.prd_account_id}:root",
+    Statement = [
+      {
+        # Grants workload account IAM principals (e.g. GitHub Actions deploy role)
+        # permission to validate image access during UpdateFunctionCode.
+        Sid    = "AllowCrossAccountPull"
+        Effect = "Allow"
+        Principal = {
+          AWS = [
+            "arn:aws:iam::${var.sandbox_account_id}:root",
+            "arn:aws:iam::${var.prd_account_id}:root",
+          ]
+        }
+        Action = [
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:BatchCheckLayerAvailability",
         ]
-      }
-      Action = [
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage",
-        "ecr:BatchCheckLayerAvailability",
-      ]
-    }]
+      },
+      {
+        # Grants the Lambda service permission to pull images at function
+        # invocation time. Lambda uses an internal service principal for
+        # cross-account image pulls — account root delegation does not cover this.
+        Sid    = "AllowLambdaServicePull"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+        Action = [
+          "ecr:BatchGetImage",
+          "ecr:GetDownloadUrlForLayer",
+        ]
+        Condition = {
+          StringLike = {
+            "aws:sourceArn" = [
+              "arn:aws:lambda:${var.aws_region}:${var.sandbox_account_id}:function:*",
+              "arn:aws:lambda:${var.aws_region}:${var.prd_account_id}:function:*",
+            ]
+          }
+        }
+      },
+    ]
   })
 }
