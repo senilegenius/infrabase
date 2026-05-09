@@ -29,6 +29,14 @@ provider "aws" {
   assume_role {
     role_arn = var.target_role_arn
   }
+
+  default_tags {
+    tags = {
+      ManagedBy   = "terraform"
+      Repo        = "infrabase"
+      Environment = "sandbox"
+    }
+  }
 }
 
 module "platform" {

@@ -24,6 +24,14 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      ManagedBy   = "terraform"
+      Repo        = "infrabase"
+      Environment = "mgmt"
+    }
+  }
 }
 
 resource "aws_s3_bucket" "terraform_state" {
